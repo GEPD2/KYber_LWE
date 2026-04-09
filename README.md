@@ -208,4 +208,4 @@ This is because MLWE has no periodic structure that the Quantum Fourier Transfor
 
 ## License
 
-This code is written for educational purposes to make the internals of FIPS 203 visible and understandable. It is not hardened for production use (no constant-time guarantees, no side-channel mitigations). [LICENSE](https://https://github.com/GEPD2/KYber_LWE/LICENSE)
+This code is written for educational purposes to make the internals of FIPS 203 visible and understandable. It is not hardened for production use (no constant-time guarantees, no side-channel mitigations). [LICENSE](https://github.com/GEPD2/KYber_LWE/blob/main/LICENSE)
