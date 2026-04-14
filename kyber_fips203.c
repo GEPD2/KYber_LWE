@@ -46,10 +46,10 @@
   PARAMETERS
 */
 
-#define KYBER_N      256
-#define KYBER_Q      3329
-#define KYBER_η    2
-#define KYBER_K      2    
+#define KYBER_N 256
+#define KYBER_Q 3329
+#define KYBER_η 2
+#define KYBER_K 2    
 /* 
 to change kyber security change one of the parameters 
 #define KYBER_K  2   this is kyber 512
@@ -57,9 +57,9 @@ to change kyber security change one of the parameters
 #define KYBER_K  4   this is kyber 1024
 */
 
-#define N_INV        3303  /* 128^{-1} mod 3329  (7 layer INTT scaling) */
-#define SEED_BYTES   32
-#define POLY_BYTES   384   /* 256 coefficients × 12 bits = 384 bytes     */
+#define N_INV 3303  /* 128^{-1} mod 3329  (7 layer INTT scaling) */
+#define SEED_BYTES 32
+#define POLY_BYTES 384   /* 256 coefficients × 12 bits = 384 bytes     */
 
 /*
   KECCAK-f[1600], the single primitive underneath SHAKE128 and SHAKE256
@@ -524,7 +524,7 @@ static void print_hex(const char *label, const uint8_t *data, size_t len) {
 static void keygen(const uint8_t d[SEED_BYTES], int k) {
     printf("╔══════════════════════════════════════════════════════════════╗\n");
     printf("║  CRYSTALS-Kyber / ML-KEM    KeyGen  (FIPS 203)               ║\n");
-    printf("║  n=256  q=3329  η=2  k=%d  (Kyber-%d)                        ║\n",
+    printf("║  n=256  q=3329  η=2  k=%d  (Kyber-%d)                       ║\n",
            k, k==2?512:k==3?768:1024);
     printf("╚══════════════════════════════════════════════════════════════╝\n\n");
 
