@@ -46,9 +46,9 @@ No external libraries. No Makefile needed. Compiles cleanly with `-Wall` (zero w
 Change one line at the top of the file:
 
 ```c
-#define KYBER_K  2   // ML-KEM-512   — ek=800B,  dk=1632B, ct=768B
-#define KYBER_K  3   // ML-KEM-768   — ek=1184B, dk=2400B, ct=1088B
-#define KYBER_K  4   // ML-KEM-1024  — ek=1568B, dk=3168B, ct=1568B
+#define KYBER_K  2   // ML-KEM-512    ek=800B,  dk=1632B, ct=768B
+#define KYBER_K  3   // ML-KEM-768    ek=1184B, dk=2400B, ct=1088B
+#define KYBER_K  4   // ML-KEM-1024   ek=1568B, dk=3168B, ct=1568B
 ```
 
 Everything else (`n`, `q`, the per-set η₁/η₂ and dᵤ/dᵥ) is derived automatically from `KYBER_K`, exactly as in the FIPS 203 parameter table.
@@ -81,10 +81,10 @@ The file implements the full Keccak-f[1600] permutation (24 rounds, θ/ρ/π/χ/
 
 | Function | Rate | Domain | Role in ML-KEM |
 |----------|------|--------|----------------|
-| SHAKE128 | 168 | `0x1F` | XOF — expand the matrix **A** from ρ |
-| SHAKE256 | 136 | `0x1F` | PRF — sample CBD noise; also **J** (rejection key) |
-| SHA3-256 | 136 | `0x06` | **H** — bind ek into the FO transform |
-| SHA3-512 | 72  | `0x06` | **G** — derive (ρ, σ) and (K, r) |
+| SHAKE128 | 168 | `0x1F` | XOF expands the matrix **A** from ρ |
+| SHAKE256 | 136 | `0x1F` | PRF samples CBD noise; also **J** (rejection key) |
+| SHA3-256 | 136 | `0x06` | **H** binds ek into the FO transform |
+| SHA3-512 | 72  | `0x06` | **G** derives (ρ, σ) and (K, r) |
 
 ### NTT: why it differs from a simple negacyclic NTT
 
@@ -105,7 +105,7 @@ The 128-entry zeta table is ζs[k] = 17^bitrev7(k) mod 3329 (k = 0..127), in the
 The public matrix A ∈ Rq^(k×k) is **never stored whole**. Each entry is generated on demand:
 
 ```
-A[i][j] = SampleNTT( SHAKE128(ρ ‖ j ‖ i) )   — rejection-sample 12-bit values < q
+A[i][j] = SampleNTT( SHAKE128(ρ ‖ j ‖ i) )    rejection-sample 12-bit values < q
 ```
 
 Note the byte order `j ‖ i` (column first, then row), as specified in FIPS 203 §5.1.
