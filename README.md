@@ -1,22 +1,27 @@
-# CRYSTALS-Kyber / ML-KEM (FIPS 203)  Key Generation in C
+# CRYSTALS-Kyber / ML-KEM (FIPS 203) in C
 
-A single file, with zero-dependencies C implementation of the **CRYSTALS-Kyber Key Generation** algorithm, fully compliant with [NIST FIPS 203](https://csrc.nist.gov/pubs/fips/203/final) (ML-KEM).
+A single-file, zero-dependency C implementation of the **full CRYSTALS-Kyber Key Encapsulation Mechanism**, compliant with [NIST FIPS 203](https://csrc.nist.gov/pubs/fips/203/final) (ML-KEM).
 
-Supports all three security levels: **Kyber-512**, **Kyber-768**, and **Kyber-1024**.
+It implements the complete IND-CCA2 KEM **KeyGen, Encapsulation, and Decapsulation** with the Fujisaki–Okamoto transform and not just key generation. It supports all three security levels: **ML-KEM-512**, **ML-KEM-768**, and **ML-KEM-1024**.
+
+> **Status:** built from scratch, no OpenSSL / libsodium / liboqs. Passes its built-in self-tests (hash known-answer vectors, NTT correctness, KEM round-trip, implicit rejection) on all three parameter sets. Educational reference, **not** constant-time, not hardened for production.
 
 ---
 
 ## What it does
 
-Runs Key Generation and prints the following in hex:
+Running the program executes two phases:
+
+1. **Self-tests** (abort on any failure) that prove the implementation is correct without needing the network go see [Self-tests](#self-tests).
+2. A **deterministic KEM exchange**: KeyGen → Encaps → Decaps, printing the public key, the ciphertext, and both sides' shared secret so you can confirm they match.
 
 | Output | Description |
 |--------|-------------|
-| `sk_hex` | Secret key **s** in NTT-domain, ByteEncode\_12 packed |
-| `e_hex`  | Error vector **e** in NTT-domain, ByteEncode\_12 packed |
-| `pk_hex` | Public key **pk** = ByteEncode\_12(t̂) \|\| ρ |
+| `ek` | Encapsulation (public) key = ByteEncode₁₂(t̂) ‖ ρ |
+| `ct` | Ciphertext = Compress(u) ‖ Compress(v) |
+| `K` / `K'` | The 32-byte shared secret, computed by the Encaps and Decaps sides |
 
-It also prints the first 8 raw coefficients of `s[0]` and `e[0]` in both unsigned `[0, q)` and signed `{−2…+2}` form, so you can verify the CBD noise distribution by eye.
+Both shared secrets are printed and compared; a correct build prints `Shared secrets match: YES`.
 
 ---
 
@@ -32,7 +37,7 @@ gcc -O2 -Wall -o kyber_fips203.exe kyber_fips203.c
 kyber_fips203.exe
 ```
 
-No external libraries. No Makefile needed. Standard C99.
+No external libraries. No Makefile needed. Compiles cleanly with `-Wall` (zero warnings).
 
 ---
 
@@ -41,12 +46,12 @@ No external libraries. No Makefile needed. Standard C99.
 Change one line at the top of the file:
 
 ```c
-#define KYBER_K  2   // Kyber-512  — pk=800B,  sk=768B
-#define KYBER_K  3   // Kyber-768  — pk=1184B, sk=1152B
-#define KYBER_K  4   // Kyber-1024 — pk=1568B, sk=1536B
+#define KYBER_K  2   // ML-KEM-512   — ek=800B,  dk=1632B, ct=768B
+#define KYBER_K  3   // ML-KEM-768   — ek=1184B, dk=2400B, ct=1088B
+#define KYBER_K  4   // ML-KEM-1024  — ek=1568B, dk=3168B, ct=1568B
 ```
 
-All other parameters (n=256, q=3329, η=2) are fixed by FIPS 203 and never need changing.
+Everything else (`n`, `q`, the per-set η₁/η₂ and dᵤ/dᵥ) is derived automatically from `KYBER_K`, exactly as in the FIPS 203 parameter table.
 
 ---
 
@@ -54,11 +59,15 @@ All other parameters (n=256, q=3329, η=2) are fixed by FIPS 203 and never need 
 
 | Parameter | Value | Note |
 |-----------|-------|------|
-| `n` | 256 | Polynomial degree fixed by FIPS 203 |
-| `q` | 3329 | Prime modulus fixed by FIPS 203 |
-| `η` | 2 | CBD noise bound fixed by FIPS 203 |
-| `k` | 2 / 3 / 4 | Module dimension selects security level |
-| `N_INV` | 3303 | 128⁻¹ mod 3329 INTT scaling factor |
+| `n` | 256 | Polynomial degree, fixed by FIPS 203 |
+| `q` | 3329 | Prime modulus, fixed by FIPS 203 |
+| `η₁` | **3** for ML-KEM-512, **2** for 768/1024 | KeyGen noise width (set-dependent) |
+| `η₂` | 2 | Encryption noise width (all sets) |
+| `dᵤ`, `dᵥ` | 10/4, 10/4, 11/5 | Compression bit-widths per set |
+| `k` | 2 / 3 / 4 | Module rank, selects the security level |
+| `N_INV` | 3303 | 128⁻¹ mod 3329, the INTT scaling factor |
+
+> **Note on η₁:** it is *not* a single fixed value. ML-KEM-512 widens its key-generation noise to η₁ = 3 to compensate for its smaller module rank; 768 and 1024 use η₁ = 2. η₂ = 2 for all sets.
 
 ---
 
@@ -66,116 +75,144 @@ All other parameters (n=256, q=3329, η=2) are fixed by FIPS 203 and never need 
 
 Everything is implemented from scratch in a single file. There are no dependencies on OpenSSL, libsodium, or any other library.
 
-### Keccak-f\[1600\] sponge
+### Keccak-f[1600] sponge
 
-The file implements the full Keccak-f\[1600\] permutation (24 rounds, θ/ρ/π/χ/ι steps) and builds both XOFs on top of it:
+The file implements the full Keccak-f[1600] permutation (24 rounds, θ/ρ/π/χ/ι) and builds **five** hash roles on top of it. THey are distinguished only by their rate and domain-separation byte:
 
-- **SHAKE128**  rate = 168 bytes, used for matrix A generation
-- **SHAKE256**  rate = 136 bytes, used for CBD sampling
+| Function | Rate | Domain | Role in ML-KEM |
+|----------|------|--------|----------------|
+| SHAKE128 | 168 | `0x1F` | XOF — expand the matrix **A** from ρ |
+| SHAKE256 | 136 | `0x1F` | PRF — sample CBD noise; also **J** (rejection key) |
+| SHA3-256 | 136 | `0x06` | **H** — bind ek into the FO transform |
+| SHA3-512 | 72  | `0x06` | **G** — derive (ρ, σ) and (K, r) |
 
-Domain separation byte: `0x1f` (standard SHAKE suffix).
+### NTT: why it differs from a simple negacyclic NTT
 
-### NTT: Why it is different from a simple negacyclic NTT
+This is the most technically subtle part. A simple negacyclic NTT needs a primitive 2n-th root of unity (ψ²ⁿ = 1 **and** ψⁿ = −1). For n = 256 that would require a primitive 512th root.
 
-This is the most technically subtle part. A simple negacyclic NTT requires a primitive 2n-th root of unity, meaning ψ^(2n) = 1 **and** ψ^n = −1 mod q. For n = 256 that would require a primitive 512th root.
+The problem: q − 1 = 3328 = 2⁸ × 13. Since 512 = 2⁹ does **not** divide 3328, no primitive 512th root exists mod 3329. The value ζ = 17 has multiplicative order 256 (so ζ²⁵⁶ = 1, not −1), so the simple 8-layer negacyclic approach cannot be used.
 
-The problem: q − 1 = 3328 = 2⁸ × 13. Since 512 = 2⁹ does **not** divide 3328, no primitive 512th root exists mod 3329. The value ζ = 17 has multiplicative order 256 (so ζ²⁵⁶ = 1, not −1), which means the simple 8-layer negacyclic approach cannot be used.
+**The FIPS 203 solution is a 7-layer NTT with base multiplication:**
 
-**The FIPS 203 solution**  7 layer NTT with base multiplication:
+1. **7 Cooley–Tukey butterfly layers** (len = 128 down to 2) transform the polynomial into 128 quadratic factors, each in a subring Zq[X]/(X² − γᵢ).
+2. **`poly_basemul`** completes the pointwise product within each quadratic subring, using the appropriate ±γ from the zeta table. *(It uses 64-bit intermediates: γ·a·b can reach q³ ≈ 3.7×10¹⁰, which would overflow a 32-bit int.)*
+3. **7 Gentleman–Sande butterfly layers** (INTT) invert the transform, then every coefficient is scaled by **128⁻¹** mod q (not 256⁻¹, because only 7 layers were applied).
 
-1. **7 Cooley-Tukey butterfly layers** (len = 128 down to len = 2) transform the degree-255 polynomial into 128 quadratic factors, each living in a subring Z\_q\[X\]/(X² − γᵢ).
-2. **`poly_basemul`** completes pointwise multiplication within each quadratic subring, using the appropriate ±γ value from the zeta table.
-3. **7 Gentleman-Sande butterfly layers** (INTT, len = 2 up to len = 128) invert the transform, followed by scaling every coefficient by 128⁻¹ mod q (not 256⁻¹, because only 7 layers were applied).
+The 128-entry zeta table is ζs[k] = 17^bitrev7(k) mod 3329 (k = 0..127), in the **plain (non-Montgomery)** domain to match the plain `% q` arithmetic used throughout.
 
-The 128-entry zeta table is precomputed as ζs\[k\] = 17^bitrev7(k) mod 3329 for k = 0..127. This is exactly FIPS 203 Algorithm 9 / Algorithm 10.
+### Matrix A generated on the fly
 
-### A matrix generated on the fly
-
-The public matrix A ∈ R\_q^(k×k) is **never stored in memory**. Each entry A\[i\]\[j\] is generated on demand by calling:
+The public matrix A ∈ Rq^(k×k) is **never stored whole**. Each entry is generated on demand:
 
 ```
-SHAKE128(ρ || j || i)  rejection sample 256 coefficients < q
+A[i][j] = SampleNTT( SHAKE128(ρ ‖ j ‖ i) )   — rejection-sample 12-bit values < q
 ```
 
-Note the byte order `j || i` (j first, then i), as specified in FIPS 203 Section 5.1. This means for large k the memory footprint for A stays O(n) at all times.
+Note the byte order `j ‖ i` (column first, then row), as specified in FIPS 203 §5.1.
 
 ### CBD sampling
 
-Secret key polynomials **s** and error polynomials **e** are sampled using the Centered Binomial Distribution with η = 2 (FIPS 203 Algorithm 7):
+The secret **s** and error **e** polynomials come from the Centered Binomial Distribution (FIPS 203 Algorithm 8):
 
-1. `SHAKE256(σ || nonce)` produces 128 bytes of pseudorandom material.
-2. Each coefficient takes 4 bits: `coeff = (b₀ + b₁) − (b₂ + b₃)` where each bᵢ is one bit.
-3. Result is in {−2, −1, 0, +1, +2}, stored as the positive representative mod q.
+1. `SHAKE256(σ ‖ nonce)` produces 64·η bytes of pseudorandom material (128 B for η = 2, 192 B for η = 3).
+2. Each coefficient uses 2·η bits: `coeff = (b₀+…+b_{η−1}) − (b_η+…+b_{2η−1})`.
+3. The result lands in {−η,…,+η}, stored as its positive representative mod q.
 
-### ByteEncode\_12 encoding
+### Compression and ByteEncode
 
-Each 12 bit coefficient is packed into 1.5 bytes (two coefficients per 3 bytes):
+Ciphertext components are **compressed** (lossy, dropping low bits to dᵤ/dᵥ bits per coefficient) and decryption still works because the accumulated noise stays below q/4. Coefficients are then packed with `ByteEncode_d`; the 12-bit key vectors pack two coefficients per three bytes (384 bytes per polynomial).
 
-```
-byte[3i+0] =  coeff[2i] & 0xFF
-byte[3i+1] = (coeff[2i] >> 8) | (coeff[2i+1] << 4)
-byte[3i+2] =  coeff[2i+1] >> 4
-```
-
-256 coefficients × 12 bits = 384 bytes per polynomial vector entry.
-
-### Key Generation flow (FIPS 203 Algorithm 13: K-PKE.KeyGen)
+### K-PKE — the IND-CPA core
 
 ```
-(ρ, σ) = SHAKE256(d || k)          // derive public and secret seeds
-A_hat  = ExpandA(ρ)                // generate A on-the-fly via SHAKE128
-s, e   = ExpandS(σ)                // sample small polynomials via CBD
-s_hat  = NTT(s),  e_hat = NTT(e)
-t_hat  = A_hat · s_hat + e_hat     // all arithmetic in NTT domain
-pk     = ByteEncode12(t_hat) || ρ  // 800 / 1184 / 1568 bytes
-sk     = ByteEncode12(s_hat)       // 768 / 1152 / 1536 bytes
+KeyGen:   t̂ = Â·ŝ + ê                              // s, e small (CBD)
+Encrypt:  u = INTT(Âᵀ·r̂) + e₁                        // r, e1, e2 fresh CBD
+          v = INTT(t̂ᵀ·r̂) + e₂ + Decompress₁(m)       // message scaled by q/2
+Decrypt:  w = v − sᵀu  →  round each coeff to a bit
 ```
 
-> **Note:** The implementation uses SHAKE256 as a stand-in for the FIPS 203 G function (which is SHA3-512). Both produce 64 bytes of output and the key derivation logic is identical. In a production deployment, replace with SHA3-512.
+### ML-KEM the FO transform (IND-CCA2)
+
+The KEM wraps K-PKE so a tampered ciphertext cannot leak the secret:
+
+```
+KeyGen:  dk = dkPKE ‖ ek ‖ H(ek) ‖ z
+Encaps:  (K, r) = G(m ‖ H(ek));   c = Encrypt(ek, m, r);   output (K, c)
+Decaps:  m' = Decrypt(s, c);  (K', r') = G(m' ‖ H(ek));
+         re-encrypt c' = Encrypt(ek, m', r');
+         if c' == c:  K = K'            // honest sender
+         else:        K = J(z ‖ c)      // implicit rejection
+```
+
+**Implicit rejection** is the key CCA2 defence: on any mismatch, Decaps returns a deterministic-but-unpredictable key `J(z‖c)` rather than failing, so an attacker learns nothing from probing.
 
 ---
 
-## Example output (Kyber-512, k=2)
+## Self-tests
+
+Five checks run at startup and abort on failure:
+
+1. **Hash KATs** SHA3-256/512 and SHAKE128/256 against published empty-string vectors. This is the only test that catches a *wrong-but-consistent* hash (one that round-trips with itself but doesn't match the standard).
+2. **NTT ∘ INTT = identity** over random polynomials.
+3. **`basemul` vs schoolbook** the fast NTT-domain product must equal a direct negacyclic convolution in Rq.
+4. **KEM round-trip** Decaps(Encaps) must recover the identical shared secret.
+5. **Implicit rejection** a tampered ciphertext must yield a different key.
+
+---
+
+## Sizes
+
+| Set | k | Public key `ek` | Decaps key `dk` | Ciphertext `ct` | Shared secret |
+|-----|---|-----------------|-----------------|-----------------|---------------|
+| ML-KEM-512  | 2 | 800 B  | 1632 B | 768 B  | 32 B |
+| ML-KEM-768  | 3 | 1184 B | 2400 B | 1088 B | 32 B |
+| ML-KEM-1024 | 4 | 1568 B | 3168 B | 1568 B | 32 B |
+
+(`dk = dkPKE ‖ ek ‖ H(ek) ‖ z`. The bare K-PKE secret key `s` is 768/1152/1536 B.)
+
+---
+
+## Example output (ML-KEM-512, k = 2)
 
 ```
-╔══════════════════════════════════════════════════════════════╗
-║  CRYSTALS-Kyber / ML-KEM    KeyGen  (FIPS 203)               ║
-║  n=256  q=3329  η=2  k=2  (Kyber-512)                        ║
-╚══════════════════════════════════════════════════════════════╝
+ML-KEM-512  (FIPS 203, k=2 eta1=3 eta2=2 du=10 dv=4)
+Self-tests:
+  [PASS] hash KATs: SHA3-256/512, SHAKE128/256 (empty-string vectors)
+  [PASS] NTT then INTT = identity (50 polys)
+  [PASS] INTT(basemul(NTT a,NTT b)) = a*b in R_q (50 trials)
+  [PASS] KEM round-trip: Decaps(Encaps) recovers shared secret (20 trials)
+  [PASS] implicit rejection: tampered ct -> different key (20 trials)
+All self-tests passed.
 
-Seed d (input) (32 bytes):
-  7f9c2ba4e88f827d61604507a7338712105040056fe83b57118920c265234100
-ρ (public seed for A) (32 bytes):
-  efe5772a502d19ab96f3b14b44644e40255ef3bc867518393d610f49684ad2f2
-σ (secret seed for s,e) (32 bytes):
-  a71e0fd474a6053e4d8c0eef55f7f5c9013a2c2ebce0919fef394fa77ef35d94
+ ML-KEM-512 full KEM (deterministic demo) 
+Sizes: ek=800  dk=1632  ct=768  ss=32
 
-sk_hex (768 bytes):
-  25d058c13a1480469c14...
-e_hex  (768 bytes):
-  8ff29c40062111b2be2a...
-pk_hex (800 bytes):
-  ...efe5772a502d19ab96f3b14b44644e40255ef3bc867518393d610f49684ad2f2
-      ↑ last 32 bytes = ρ
+ek (first 192 bytes):
+  c78209aebc5eb37bc0203254d4f87736f323b5b35687b43decb6a23be45a1916
+  ... (800 bytes total)
 
-First 8 coefficients of s[0]:  +0  +0  +0  +0  +0  +0  +2  +1
-First 8 coefficients of e[0]:  +0  -1  +1  +2  +0  +0  -1  +2
+ct (first 192 bytes):
+  52d7007b92725e71faa4a8fa7b90c2f4d472e28d848906a7bf74086b6b141d13
+  ... (768 bytes total)
+
+K  (shared secret, Encaps side) (32 bytes):
+  39bbbea637d43c9fd825388d63ba93cfb1d200dd612fd08b4e30a84aeee23c43
+K' (shared secret, Decaps side) (32 bytes):
+  39bbbea637d43c9fd825388d63ba93cfb1d200dd612fd08b4e30a84aeee23c43
+
+Shared secrets match: YES
 ```
-
-The last 32 bytes of `pk_hex` are always equal to ρ — this is the public seed that allows any party to regenerate A on demand.
-
-The signed coefficients of s and e are strictly in {−2, −1, 0, +1, +2}, confirming correct CBD η=2 sampling.
 
 ---
 
 ## Changing the seed
 
-The seed in `main()` is a fixed example for reproducibility. For real use, replace it with random bytes:
+The seeds in `main()` are fixed for reproducibility. For real use, draw `d`, `z`, and `m` from a cryptographically secure RNG:
 
 ```c
 // Linux / macOS
 FILE *f = fopen("/dev/urandom", "rb");
-fread(d, 1, SEED_BYTES, f);
+fread(d, 1, 32, f);   fread(z, 1, 32, f);   fread(m, 1, 32, f);
 fclose(f);
 ```
 
@@ -183,29 +220,44 @@ fclose(f);
 
 ## Mathematical background
 
-The security of Kyber rests on the hardness of the **Module Learning With Errors (MLWE)** problem:
+Kyber's security rests on the hardness of the **Module Learning With Errors (MLWE)** problem:
 
-> Given a public matrix **A** and a public vector **t = As + e**, it is computationally infeasible to recover the secret **s** even for a quantum computer.
+> Given a public matrix **A** and a public vector **t = As + e**, recovering the secret **s** is computationally infeasible, even for a quantum computer.
 
-This is because MLWE has no periodic structure that the Quantum Fourier Transform (QFT) can exploit, unlike the integer factorisation and discrete logarithm problems attacked by Shor's algorithm. The noise vector **e** (whose coefficients are bounded by η = 2) is the mechanism that destroys any exploitable algebraic regularity.
+Shor's algorithm breaks RSA and elliptic-curve cryptography because it efficiently solves the *abelian hidden-subgroup / period-finding* problem behind factorisation and discrete logs. MLWE simply **isn't** such a problem, there is no period for the Quantum Fourier Transform to extract which is why no efficient quantum attack on it is known. The small noise **e** is what keeps the secret hidden.
 
 | Scheme | Hardness assumption | Quantum threat |
-|--------|--------------------|-|
+|--------|---------------------|----------------|
 | RSA / DH | Factorisation / DLP | Broken by Shor |
-| ECDSA / Schnorr | DLP on elliptic curves | Broken by Shor |
-| CRYSTALS-Kyber | Module-LWE | Resistant, no periodicity |
+| ECDSA / Schnorr | Elliptic-curve DLP | Broken by Shor |
+| CRYSTALS-Kyber | Module-LWE | No known quantum attack |
+
+---
+
+## Recent corrections
+
+This version fixes several issues present in the earlier key-generation-only release:
+
+- **Keccak-f ρ/π step** corrected to the canonical chained walk. The previous version produced hashes that round-tripped with themselves but did **not** match the SHA-3/SHAKE standard (caught by the new hash KAT). All hash-derived output (ρ, σ, A, keys) was affected.
+- **`basemul` overflow** now uses 64-bit intermediates; the previous 32-bit code overflowed (γ·a·b ≈ q³) and silently corrupted products.
+- **G = SHA3-512** key derivation now uses the correct function. (Earlier versions used SHAKE256 as a stand-in; this is no longer the case.)
+- **η₁ is now set-dependent** 3 for ML-KEM-512, 2 for 768/1024. The earlier code hardcoded η = 2, which was non-compliant for ML-KEM-512.
+- **Completed to a full KEM** added K-PKE Encrypt/Decrypt and ML-KEM Encaps/Decaps with the Fujisaki–Okamoto transform and implicit rejection.
+- **Built-in self-tests** hash KATs, NTT correctness, KEM round-trip, and implicit rejection now run on every invocation.
+
+**Verification scope:** the implementation is validated by the published SHA-3/SHAKE KAT vectors, internal algebraic consistency, the end-to-end KEM round-trip, and exact FIPS 203 key/ciphertext sizes across all three sets. It has **not** yet been checked against NIST's official ACVP/ML-KEM KAT response files.
 
 ---
 
 ## References
 
 - [NIST FIPS 203](https://csrc.nist.gov/pubs/fips/203/final) ML-KEM Standard (August 2024)
-- [CRYSTALS-Kyber specification](https://pq-crystals.org/kyber/) original submission to NIST PQC
-- [NIST FIPS 202](https://csrc.nist.gov/publications/detail/fips/202/final) SHA-3 / SHAKE standard (Keccak)
-- Bos et al. (2018) — *CRYSTALS-Kyber: a CCA-secure module-lattice-based KEM*, IEEE EuroS&P
+- [CRYSTALS-Kyber specification](https://pq-crystals.org/kyber/) original NIST PQC submission
+- [NIST FIPS 202](https://csrc.nist.gov/publications/detail/fips/202/final) SHA-3 / SHAKE (Keccak)
+- Bos et al. (2018) *CRYSTALS-Kyber: a CCA-secure module-lattice-based KEM*, IEEE EuroS&P
 
 ---
 
 ## License
 
-This code is written for educational purposes to make the internals of FIPS 203 visible and understandable. It is not hardened for production use (no constant-time guarantees, no side-channel mitigations). [LICENSE](https://github.com/GEPD2/KYber_LWE/blob/main/LICENSE)
+Written for educational purposes, to make the internals of FIPS 203 visible and understandable. It is **not** hardened for production use (no constant-time guarantees, no side-channel mitigations). See [LICENSE](https://github.com/GEPD2/KYber_LWE/blob/main/LICENSE).
